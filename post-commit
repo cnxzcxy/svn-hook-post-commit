@@ -1,0 +1,142 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*- 
+import os
+import sys
+import time
+import shutil
+import MySQLdb
+import commands
+
+reload(sys)
+sys.setdefaultencoding('utf-8')
+os.environ['LANG'] = 'zh_CN.GBK'
+
+svnlook_bin_path = '/usr/bin/svnlook'
+
+mysql_host = '127.0.0.1'
+mysql_user = 'root'
+mysql_passwd = '123456'
+mysql_db = 'codestat'
+mysql_charset = 'utf8'
+
+def get_author(repo, rev):  
+    """svnlook author -r REV REPOS 获得提交者 
+    """  
+    cmd = '%s author -r %s %s' % (svnlook_bin_path, rev, repo)  
+    output = os.popen(cmd).read()  
+    return output.strip()
+
+def get_repo_name(repo):  
+    return os.path.basename(repo).strip()
+  
+def get_author(repo, rev):  
+    """svnlook author -r REV REPOS 获得提交者 
+    """  
+    cmd = '%s author -r %s %s' % (svnlook_bin_path, rev, repo)  
+    output = os.popen(cmd).read()  
+    return output.strip()
+  
+def get_date(repo, rev):  
+    """svnlook date -r REV REPOS 获得提交时间 
+    """  
+    cmd = '%s date -r %s %s' % (svnlook_bin_path, rev, repo)  
+    output = os.popen(cmd).read()  
+    output = time.mktime(time.strptime(output[:19], "%Y-%m-%d %H:%M:%S"))
+    return int(output)
+  
+def get_log(repo, rev):  
+    """svnlook log -r REV REPOS 获得提交日志 
+    """  
+    cmd = '%s log -r %s %s' % (svnlook_bin_path, rev, repo)  
+    output = os.popen(cmd).read()  
+    return output.strip()
+
+def get_change_lines(repo, rev):
+    """svnlook diff -r REV REPOS 获得版本差异，并导出日志
+    """
+    svndiff = '%s/svndiff.log' % repo
+    cmd = '%s diff -r %s %s > %s' % (svnlook_bin_path, rev, repo, svndiff)
+    os.popen(cmd).read()
+    cmd = 'grep "^+" %s | grep -v "^+++" | sed \'s/^.//\'| sed s/[[:space:]]//g |sed \'/^$/d\'|wc -l' % svndiff
+    changelines = int(os.popen(cmd).read())
+    cmd = 'grep "^-" %s | grep -v "^---" | sed \'s/^.//\'| sed s/[[:space:]]//g |sed \'/^$/d\'|wc -l' % svndiff
+    changelines += int(os.popen(cmd).read())
+    return str(changelines)
+
+def insert_table(author, repo, date, rev, log, lines):
+    """提交名字和日志可能是中文，由于svn hook运行环境为gbk，所以在脚本顶部，将环境设置为zh_CN.GBK，这里将rev log转utf8保存
+    """
+    author = author.decode('gb2312')
+    log = log.decode('gb2312')
+
+    conn = MySQLdb.connect(host=mysql_host, user=mysql_user, passwd=mysql_passwd, db=mysql_db, charset=mysql_charset)
+    cursor = conn.cursor()
+
+    sql = "select id from codestat_author where name = '%s'" % author
+    cursor.execute(sql)
+    rs = cursor.fetchone()
+    if rs and rs[0]:
+        author = rs[0]
+    else:
+        sql = []
+        sql.append("insert into codestat_author ")
+        sql.append("(name) values (%s) ")
+        sql = ' '.join(sql)
+        cursor.execute(sql, author)
+        author = cursor.lastrowid
+
+    if author > 0:
+        pass
+    else:
+        author = 1
+
+    sql = "select id from codestat_repo where name = '%s'" % repo
+    cursor.execute(sql)
+    rs = cursor.fetchone()
+    if rs and rs[0]:
+        repo = rs[0]
+    else:
+        sql = []
+        sql.append("insert into codestat_repo ")
+        sql.append("(name) values (%s) ")
+        sql = ' '.join(sql)
+        cursor.execute(sql, repo)
+        repo = cursor.lastrowid
+
+    if repo > 0:
+        pass
+    else:
+        repo = 1
+
+    sql = []
+    sql.append("insert into codestat_svnlog ")
+    sql.append("(author, repo , committime, revision, revlog, changelines, createtime, updatetime) ")
+    sql.append(" values (%s, %s, %s, %s, %s, %s, %s, %s) ")
+    sql = ' '.join(sql)
+    param = (author, repo, date, rev, log, lines, int(time.time()), int(time.time()))
+    rs = cursor.execute(sql, param)
+    cursor.close()
+    conn.close()
+  
+def main(argv):
+    '''
+    调试方法python post-commit /path/to/svn/repo 123
+    参数一个是svn repo路径，一个是版本号
+    '''
+    (repo, rev) = argv
+
+    author = get_author(repo, rev)
+    reponame = get_repo_name(repo)
+    date = get_date(repo, rev)
+    log = get_log(repo, rev)
+    lines = get_change_lines(repo, rev)
+
+    insert_table(author, reponame, date, rev, log, lines)
+
+    print "全部更新完成，详细信息请查看报表"
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print main.__doc__
+    else:
+        main(sys.argv[1:])
